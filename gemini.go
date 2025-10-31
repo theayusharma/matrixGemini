@@ -4,51 +4,55 @@ import (
 	"context"
 	"fmt"
 
-	"google.golang.org/api/option"
 	"google.golang.org/genai"
 )
 
 type GeminiClient struct {
 	client *genai.Client
-	model  *genai.GenerativeModel
 }
 
 func NewGeminiClient(apiKey string) (*GeminiClient, error) {
 	ctx := context.Background()
 
-	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create genai client: %w", err)
 	}
 
-	model := client.GenerativeModel("gemini-2.0-flash-exp")
-	//
-	// model.SetTemperature(0.7)
-	// model.SetTopP(0.95)
-	// model.SetTopK(40)
-	model.SetMaxOutputTokens(8192) // Max response length
+	return &GeminiClient{
+		client: client,
+	}, nil
+}
 
-	// Set system instruction
-	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{
-			genai.Text("You are a helpful AI assistant in a Matrix chat room. " +
+func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
+	systemInstruction := &genai.Content{
+		Role: "user",
+		Parts: []*genai.Part{
+			genai.NewPartFromText("You are a helpful AI assistant in a Matrix chat room. " +
 				"Provide clear, concise, and friendly responses. " +
 				"Use markdown formatting when appropriate."),
 		},
 	}
 
-	return &GeminiClient{
-		client: client,
-		model:  model,
-	}, nil
-}
+	userContent := &genai.Content{
+		Role: "user",
+		Parts: []*genai.Part{
+			genai.NewPartFromText(prompt),
+		},
+	}
 
-func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
-	session := g.model.StartChat()
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: systemInstruction,
+		Temperature:       genai.Ptr(float32(0.7)),
+		MaxOutputTokens:   8192,
+	}
 
-	resp, err := session.SendMessage(ctx, genai.Text(prompt))
+	resp, err := g.client.Models.GenerateContent(ctx, "gemini-2.0-flash-exp", []*genai.Content{userContent}, config)
 	if err != nil {
-		return "", fmt.Errorf("failed to send message: %w", err)
+		return "", fmt.Errorf("failed to generate content: %w", err)
 	}
 
 	if len(resp.Candidates) == 0 {
@@ -60,11 +64,10 @@ func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
 		return "", fmt.Errorf("empty response content")
 	}
 
-	// concatenate all text parts
 	var responseText string
 	for _, part := range candidate.Content.Parts {
-		if textPart, ok := part.(genai.Text); ok {
-			responseText += string(textPart)
+		if part.Text != "" {
+			responseText += part.Text
 		}
 	}
 
@@ -76,5 +79,5 @@ func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
 }
 
 func (g *GeminiClient) Close() error {
-	return g.client.Close()
+	return nil
 }
