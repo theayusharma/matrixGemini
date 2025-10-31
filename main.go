@@ -208,37 +208,93 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 
 	var replyContext string
 	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
-		replyEventID := msg.RelatesTo.InReplyTo.EventID
-		debugPrint("   [DEBUG] Message is a reply to: %s\n", replyEventID)
+		debugPrint("   [DEBUG] Message is a reply, fetching conversation thread...\n")
 
-		replyEvent, err := client.GetEvent(ctx, roomID, replyEventID)
-		if err != nil {
-			debugPrint("   [WARNING] Could not fetch replied message: %v\n", err)
-		} else {
-			debugPrint("   [DEBUG] Reply event type: %s\n", replyEvent.Type)
+		// Collect up to 5 messages in the reply chain
+		const maxThreadDepth = 5
+		type ThreadMessage struct {
+			Sender string
+			Body   string
+		}
+		var thread []ThreadMessage
 
-			var replyBody string
-			var replySender string
+		// Get initial replied message
+		currentEventID := msg.RelatesTo.InReplyTo.EventID
 
-			if replyEvent.Content.AsMessage() != nil {
-				replyMsg := replyEvent.Content.AsMessage()
-				replyBody = replyMsg.Body
-				replySender = replyEvent.Sender.String()
+		for i := 0; i < maxThreadDepth && currentEventID != ""; i++ {
+			debugPrint("   [DEBUG] Fetching message %d in thread: %s\n", i+1, currentEventID)
+
+			replyEvent, err := client.GetEvent(ctx, roomID, currentEventID)
+			if err != nil {
+				debugPrint("   [WARNING] Could not fetch message in thread: %v\n", err)
+				break
 			}
 
-			if replyEvent.Content.Raw != nil {
+			debugPrint("   [DEBUG] Reply event type: %s\n", replyEvent.Type)
+
+			var messageBody string
+			var messageSender string
+			var nextEventID id.EventID
+
+			// Extract message content
+			if replyEvent.Content.AsMessage() != nil {
+				replyMsg := replyEvent.Content.AsMessage()
+				messageBody = replyMsg.Body
+				messageSender = replyEvent.Sender.String()
+				debugPrint("   [DEBUG] Extracted from AsMessage: body='%s', sender='%s'\n", messageBody, messageSender)
+
+				// Continue following the reply chain
+				if replyMsg.RelatesTo != nil && replyMsg.RelatesTo.InReplyTo != nil {
+					nextEventID = replyMsg.RelatesTo.InReplyTo.EventID
+					debugPrint("   [DEBUG] Found reply chain continues to: %s\n", nextEventID)
+				} else {
+					debugPrint("   [DEBUG] No more replies in chain (RelatesTo is nil or no InReplyTo)\n")
+				}
+			} else {
+				debugPrint("   [DEBUG] AsMessage() returned nil\n")
+			}
+
+			// Fallback to Raw content if AsMessage didn't work
+			if messageBody == "" && replyEvent.Content.Raw != nil {
+				debugPrint("   [DEBUG] Trying to extract from Raw content...\n")
 				if rawBody, ok := replyEvent.Content.Raw["body"].(string); ok && rawBody != "" {
-					replyBody = rawBody
+					messageBody = rawBody
+					messageSender = replyEvent.Sender.String()
+					debugPrint("   [DEBUG] Extracted from Raw: body='%s', sender='%s'\n", messageBody, messageSender)
+
+					// Check for RelatesTo in Raw content
+					if relatesTo, ok := replyEvent.Content.Raw["m.relates_to"].(map[string]interface{}); ok {
+						if inReplyTo, ok := relatesTo["m.in_reply_to"].(map[string]interface{}); ok {
+							if eventID, ok := inReplyTo["event_id"].(string); ok {
+								nextEventID = id.EventID(eventID)
+								debugPrint("   [DEBUG] Found reply chain in Raw continues to: %s\n", nextEventID)
+							}
+						}
+					}
 				}
 			}
 
-			if replyBody != "" {
-				replyContext = fmt.Sprintf("[Replying to message from %s: \"%s\"]\n\n", replySender, replyBody)
-				debugPrint("   [CONTEXT] Got replied message: %s\n", replyBody)
+			if messageBody != "" {
+				thread = append(thread, ThreadMessage{
+					Sender: messageSender,
+					Body:   messageBody,
+				})
+				debugPrint("   [CONTEXT] Thread message %d from %s: %s\n", i+1, messageSender, messageBody)
+				currentEventID = nextEventID
 			} else {
-				debugPrint("   [WARNING] Could not extract body from replied message\n")
-				debugPrint("   [DEBUG] Reply event content: %+v\n", replyEvent.Content)
+				debugPrint("   [WARNING] Could not extract message body, stopping thread traversal\n")
+				break
 			}
+		}
+
+		// Build context from thread (reverse order so oldest is first)
+		if len(thread) > 0 {
+			replyContext = "[Previous conversation context]\n\n"
+			for i := len(thread) - 1; i >= 0; i-- {
+				replyContext += fmt.Sprintf("%s: %s\n", thread[i].Sender, thread[i].Body)
+			}
+			replyContext += "\n[End of context]\n\n"
+			debugPrint("   [SUCCESS] Built conversation context with %d messages\n", len(thread))
 		}
 	}
 
