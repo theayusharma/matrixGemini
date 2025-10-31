@@ -70,9 +70,9 @@ func main() {
 	if err != nil {
 		log.Fatal("Login failed:", err)
 	}
-
-	fmt.Println("Logged in as", resp.UserID)
-	fmt.Println("Access Token:", resp.AccessToken)
+	
+	debugPrint("Logged in as %s\n", resp.UserID)
+	debugPrint("Access Token: %s\n", resp.AccessToken)
 
 	debugPrint("[INFO] Setting up encryption support...\n")
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("go-neb-password"), "matrix-bot-crypto.db")
