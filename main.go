@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -12,14 +13,33 @@ import (
 
 	"github.com/joho/godotenv"
 	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto"
+	"maunium.net/go/mautrix/crypto/cryptohelper"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
+var debugMode bool
+
+func debugPrint(format string, args ...interface{}) {
+	if debugMode {
+		fmt.Printf(format, args...)
+	}
+}
+
+func debugLog(format string, args ...interface{}) {
+	if debugMode {
+		log.Printf(format, args...)
+	}
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("Warning: .env file not found, using system environment variables")
+	}
+
+	debugMode = os.Getenv("DEBUG") == "true"
+	if !debugMode {
+		log.SetOutput(io.Discard)
 	}
 
 	ctx := context.Background()
@@ -55,8 +75,40 @@ func main() {
 	fmt.Println("Logged in as", resp.UserID)
 	fmt.Println("Access Token:", resp.AccessToken)
 
-	var olmMachine *crypto.OlmMachine
-	fmt.Println("[INFO] Encryption support disabled - bot will only work in unencrypted rooms")
+	debugPrint("[INFO] Setting up encryption support...\n")
+	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("go-neb-password"), "matrix-bot-crypto.db")
+	if err != nil {
+		debugLog("[WARNING] Failed to create crypto helper: %v", err)
+		debugPrint("[WARNING] Bot will work in unencrypted rooms only\n")
+		cryptoHelper = nil
+	} else {
+		cryptoHelper.LoginAs = &mautrix.ReqLogin{
+			Type: mautrix.AuthTypePassword,
+			Identifier: mautrix.UserIdentifier{
+				Type: mautrix.IdentifierTypeUser,
+				User: username,
+			},
+			Password: password,
+		}
+
+		err = cryptoHelper.Init(ctx)
+		if err != nil {
+			debugLog("[WARNING] Failed to initialize crypto: %v", err)
+			debugPrint("[WARNING] Bot will work in unencrypted rooms only\n")
+			cryptoHelper = nil
+		} else {
+			client.Crypto = cryptoHelper
+
+			syncer := client.Syncer.(*mautrix.DefaultSyncer)
+			syncer.ParseEventContent = true
+			syncer.ParseErrorHandler = func(evt *event.Event, err error) bool {
+				debugLog("[CRYPTO ERROR] Failed to parse/decrypt event %s in %s: %v", evt.ID, evt.RoomID, err)
+				return true
+			}
+
+			debugPrint("[SUCCESS] Encryption support enabled\n")
+		}
+	}
 
 	gemini, err := NewGeminiClient(geminiAPIKey)
 	if err != nil {
@@ -66,16 +118,16 @@ func main() {
 	syncer := client.Syncer.(*mautrix.DefaultSyncer)
 
 	joinedRooms := make(map[id.RoomID]bool)
-	
+
 	startTime := time.Now()
-	fmt.Printf("[INFO] Bot started at: %v - will only respond to messages after this time\n", startTime)
-	
+	debugPrint("[INFO] Bot started at: %v - will only respond to messages after this time\n", startTime)
+
 	existingRooms, err := client.JoinedRooms(ctx)
 	if err == nil {
 		for _, roomID := range existingRooms.JoinedRooms {
 			joinedRooms[roomID] = true
 		}
-		fmt.Printf("[INFO] Already in %d rooms\n", len(existingRooms.JoinedRooms))
+		debugPrint("[INFO] Already in %d rooms\n", len(existingRooms.JoinedRooms))
 	}
 
 	syncer.OnEventType(event.StateMember, func(ctx context.Context, ev *event.Event) {
@@ -86,50 +138,17 @@ func main() {
 
 			resp, err := client.JoinRoomByID(ctx, ev.RoomID)
 			if err != nil {
-				log.Printf("[ERROR] Failed to join room %s: %v", ev.RoomID, err)
+				debugLog("[ERROR] Failed to join room %s: %v", ev.RoomID, err)
 			} else {
 				joinedRooms[ev.RoomID] = true
-				fmt.Printf("[JOINED] Room: %s\n", resp.RoomID)
+				debugPrint("[JOINED] Room: %s\n", resp.RoomID)
 			}
 		}
 	})
 
 	syncer.OnEventType(event.EventEncrypted, func(ctx context.Context, ev *event.Event) {
-		if olmMachine == nil {
-			fmt.Println("[DEBUG] Encrypted event received but no OlmMachine")
-			return
-		}
-
-		if time.UnixMilli(ev.Timestamp).Before(startTime) {
-			fmt.Println("[INFO] Skipping old encrypted message from before bot start")
-			return
-		}
-
-		fmt.Printf("[DEBUG] Attempting to decrypt message from %s in room %s\n", ev.Sender, ev.RoomID)
-		
-		decrypted, err := olmMachine.DecryptMegolmEvent(ctx, ev)
-		if err != nil {
-			fmt.Printf("[ERROR] Failed to decrypt message: %v\n", err)
-			fmt.Printf("[ERROR] Event details - Sender: %s, Room: %s, Type: %s\n", ev.Sender, ev.RoomID, ev.Type)
-			return
-		}
-
-		fmt.Printf("[SUCCESS] Decrypted message successfully\n")
-
-		if decrypted.Type != event.EventMessage {
-			return
-		}
-
-		if decrypted.Sender == client.UserID {
-			return
-		}
-
-		msg := decrypted.Content.AsMessage()
-		if msg == nil {
-			return
-		}
-
-		handleMessage(ctx, client, gemini, decrypted.RoomID, decrypted.Sender, msg)
+		debugPrint("[ENCRYPTED] Received encrypted event in room %s from %s\n", ev.RoomID, ev.Sender)
+		debugPrint("[ENCRYPTED] Event will be auto-decrypted by cryptohelper\n")
 	})
 
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, ev *event.Event) {
@@ -138,7 +157,7 @@ func main() {
 		}
 
 		if time.UnixMilli(ev.Timestamp).Before(startTime) {
-			fmt.Println("[INFO] Skipping old unencrypted message from before bot start")
+			debugPrint("[INFO] Skipping old unencrypted message from before bot start\n")
 			return
 		}
 
@@ -151,23 +170,18 @@ func main() {
 	})
 
 	syncer.OnEvent(func(ctx context.Context, ev *event.Event) {
-		fmt.Printf("[EVENT] Type: %s, Room: %s, Sender: %s\n", ev.Type.Type, ev.RoomID, ev.Sender)
-		
-		if ev.Type == event.EventEncrypted && olmMachine == nil {
-			fmt.Printf("[WARNING] Received encrypted message - bot cannot read encrypted rooms!\n")
-			fmt.Printf("[WARNING] Please use the bot in an unencrypted room or disable encryption.\n")
-		}
+		debugPrint("[EVENT] Type: %s, Room: %s, Sender: %s\n", ev.Type.Type, ev.RoomID, ev.Sender)
 	})
 
-	fmt.Println("Bot started. Listening for messages...")
-	fmt.Println("Press Ctrl+C to stop")
+	debugPrint("Bot started. Listening for messages...\n")
+	debugPrint("Press Ctrl+C to stop\n")
 
-	fmt.Println("[SYNC] Starting sync...")
-	
+	debugPrint("[SYNC] Starting sync...\n")
+
 	go func() {
 		err := client.Sync()
 		if err != nil {
-			log.Printf("[ERROR] Sync error: %v", err)
+			debugLog("[ERROR] Sync error: %v", err)
 		}
 	}()
 
@@ -175,7 +189,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
-	fmt.Println("\nShutting down gracefully...")
+	debugPrint("\nShutting down gracefully...\n")
 	time.Sleep(1 * time.Second)
 }
 
@@ -187,43 +201,86 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		formattedBody = msg.FormattedBody
 	}
 
-	fmt.Printf("\n[MESSAGE] Room: %s\n", roomID)
-	fmt.Printf("   From: %s\n", sender)
-	fmt.Printf("   Content: %s\n", body)
-	fmt.Printf("   FormattedBody: %s\n", formattedBody)
+	debugPrint("\n[MESSAGE] Room: %s\n", roomID)
+	debugPrint("   From: %s\n", sender)
+	debugPrint("   Content: %s\n", body)
+	debugPrint("   FormattedBody: %s\n", formattedBody)
 
-	if strings.HasPrefix(bodyLower, "/about") {
-		fmt.Println("   [COMMAND] /about")
-		reply := "**Matrix Gemini Bot**\n\n" +
-			"**Creator:** Ayush Sharma\n" +
-			"**GitHub:** https://github.com/theayusharma/matrixGemini\n" +
-			"**Model:** Google Gemini 2.0 Flash Exp\n\n" +
-			"Mention me or use @gemini to chat!"
-		_, _ = client.SendText(ctx, roomID, reply)
-		fmt.Println("   [SUCCESS] Sent /about response")
-		return
+	var replyContext string
+	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
+		replyEventID := msg.RelatesTo.InReplyTo.EventID
+		debugPrint("   [DEBUG] Message is a reply to: %s\n", replyEventID)
+
+		replyEvent, err := client.GetEvent(ctx, roomID, replyEventID)
+		if err != nil {
+			debugPrint("   [WARNING] Could not fetch replied message: %v\n", err)
+		} else {
+			debugPrint("   [DEBUG] Reply event type: %s\n", replyEvent.Type)
+
+			var replyBody string
+			var replySender string
+
+			if replyEvent.Content.AsMessage() != nil {
+				replyMsg := replyEvent.Content.AsMessage()
+				replyBody = replyMsg.Body
+				replySender = replyEvent.Sender.String()
+			}
+
+			if replyEvent.Content.Raw != nil {
+				if rawBody, ok := replyEvent.Content.Raw["body"].(string); ok && rawBody != "" {
+					replyBody = rawBody
+				}
+			}
+
+			if replyBody != "" {
+				replyContext = fmt.Sprintf("[Replying to message from %s: \"%s\"]\n\n", replySender, replyBody)
+				debugPrint("   [CONTEXT] Got replied message: %s\n", replyBody)
+			} else {
+				debugPrint("   [WARNING] Could not extract body from replied message\n")
+				debugPrint("   [DEBUG] Reply event content: %+v\n", replyEvent.Content)
+			}
+		}
 	}
 
 	botMention := client.UserID.String()
-	fmt.Printf("   [DEBUG] Bot username: %s\n", botMention)
-	fmt.Printf("   [DEBUG] Checking for bot mention in: %s\n", body)
-	
+	debugPrint("   [DEBUG] Bot username: %s\n", botMention)
+	debugPrint("   [DEBUG] Checking for bot mention in: %s\n", body)
+
 	hasBotMention := strings.Contains(body, botMention)
 	hasGeminiMention := strings.Contains(bodyLower, "@gemini")
-	
-	fmt.Printf("   [DEBUG] hasBotMention: %v\n", hasBotMention)
-	fmt.Printf("   [DEBUG] hasGeminiMention: %v\n", hasGeminiMention)
+	hasAboutCommand := strings.Contains(bodyLower, "/about")
+	hasProCommand := strings.Contains(bodyLower, "/pro")
+
+	debugPrint("   [DEBUG] hasBotMention: %v\n", hasBotMention)
+	debugPrint("   [DEBUG] hasGeminiMention: %v\n", hasGeminiMention)
+
+	if (hasBotMention || hasGeminiMention) && hasAboutCommand {
+		debugPrint("   [COMMAND] /about\n")
+		reply := "**Matrix Gemini Bot**\n\n" +
+			"**Created by:** Ayush Sharma (@theayusharma)\n" +
+			"**GitHub:** https://github.com/theayusharma/matrixGemini\n" +
+			"**AI Model:** Google Gemini 2.0 Flash Exp\n" +
+			"**Encryption:** Enabled (E2EE Supported)\n\n" +
+			"**Usage:**\n" +
+			"Mention me with `@test:localhost` or `@gemini` to chat\n" +
+			"Use `/about` to see this information\n" +
+			"Use `/pro` to use Gemini 2.0 Flash Thinking model for your query\n\n" +
+			"*Powered by Matrix & Google Gemini AI*"
+		_, _ = client.SendText(ctx, roomID, reply)
+		debugPrint("   [SUCCESS] Sent /about response\n")
+		return
+	}
 
 	if !hasBotMention && !hasGeminiMention {
-		fmt.Println("   [SKIP] No bot mention found")
+		debugPrint("   [SKIP] No bot mention found\n")
 		return
 	}
 
 	if hasBotMention {
-		fmt.Printf("   [DETECTED] Bot mention: %s\n", botMention)
+		debugPrint("   [DETECTED] Bot mention: %s\n", botMention)
 	}
 	if hasGeminiMention {
-		fmt.Println("   [DETECTED] @gemini mention")
+		debugPrint("   [DETECTED] @gemini mention\n")
 	}
 
 	clean := body
@@ -231,34 +288,59 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 	clean = strings.ReplaceAll(clean, "@gemini", "")
 	clean = strings.ReplaceAll(clean, "@Gemini", "")
 	clean = strings.ReplaceAll(clean, "@GEMINI", "")
+
+	usePro := hasProCommand
+	if usePro {
+		clean = strings.ReplaceAll(clean, "/pro", "")
+		clean = strings.ReplaceAll(clean, "/Pro", "")
+		clean = strings.ReplaceAll(clean, "/PRO", "")
+	}
+
 	clean = strings.TrimSpace(clean)
 
 	if clean == "" {
-		fmt.Println("   [WARNING] Empty message after removing mentions")
+		debugPrint("   [WARNING] Empty message after removing mentions\n")
 		return
 	}
 
-	fmt.Printf("   [PROMPT] %s\n", clean)
+	finalPrompt := clean
+	if replyContext != "" {
+		finalPrompt = replyContext + clean
+	}
 
-	go func() {
-		_, _ = client.UserTyping(ctx, roomID, true, 30000)
-	}()
+	if usePro {
+		debugPrint("   [PROMPT] %s (using Gemini Pro)\n", finalPrompt)
+	} else {
+		debugPrint("   [PROMPT] %s\n", finalPrompt)
+	}
 
-	fmt.Println("   [PROCESSING] Asking Gemini...")
+	_, _ = client.UserTyping(ctx, roomID, true, 10000)
 
-	reply, err := gemini.Ask(ctx, clean)
+	debugPrint("   [PROCESSING] Asking Gemini...\n")
+
+	var reply string
+	var err error
+
+	if usePro {
+		reply, err = gemini.AskPro(ctx, finalPrompt)
+	} else {
+		reply, err = gemini.Ask(ctx, finalPrompt)
+	}
+
+	_, _ = client.UserTyping(ctx, roomID, false, 0)
+
 	if err != nil {
 		reply = "Sorry, I encountered an error: " + err.Error()
-		log.Printf("   [ERROR] Gemini error: %v", err)
+		debugLog("   [ERROR] Gemini error: %v", err)
 	} else {
-		fmt.Printf("   [SUCCESS] Gemini response received (%d chars)\n", len(reply))
+		debugPrint("   [SUCCESS] Gemini response received (%d chars)\n", len(reply))
 	}
 
 	_, err = client.SendText(ctx, roomID, reply)
 	if err != nil {
-		log.Printf("   [ERROR] Failed to send message: %v", err)
+		debugLog("   [ERROR] Failed to send message: %v", err)
 	} else {
-		fmt.Println("   [SENT] Response sent to room")
+		debugPrint("   [SENT] Response sent to room\n")
 	}
 
 	_, _ = client.UserTyping(ctx, roomID, false, 0)
