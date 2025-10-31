@@ -58,7 +58,6 @@ func main() {
 		log.Fatal("Failed to create client:", err)
 	}
 
-	// Login
 	resp, err := client.Login(ctx, &mautrix.ReqLogin{
 		Type: mautrix.AuthTypePassword,
 		Identifier: mautrix.UserIdentifier{
@@ -210,7 +209,6 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
 		debugPrint("   [DEBUG] Message is a reply, fetching conversation thread...\n")
 
-		// Collect up to 5 messages in the reply chain
 		const maxThreadDepth = 5
 		type ThreadMessage struct {
 			Sender string
@@ -218,7 +216,6 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		}
 		var thread []ThreadMessage
 
-		// Get initial replied message
 		currentEventID := msg.RelatesTo.InReplyTo.EventID
 
 		for i := 0; i < maxThreadDepth && currentEventID != ""; i++ {
@@ -236,14 +233,12 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 			var messageSender string
 			var nextEventID id.EventID
 
-			// Extract message content
 			if replyEvent.Content.AsMessage() != nil {
 				replyMsg := replyEvent.Content.AsMessage()
 				messageBody = replyMsg.Body
 				messageSender = replyEvent.Sender.String()
 				debugPrint("   [DEBUG] Extracted from AsMessage: body='%s', sender='%s'\n", messageBody, messageSender)
 
-				// Continue following the reply chain
 				if replyMsg.RelatesTo != nil && replyMsg.RelatesTo.InReplyTo != nil {
 					nextEventID = replyMsg.RelatesTo.InReplyTo.EventID
 					debugPrint("   [DEBUG] Found reply chain continues to: %s\n", nextEventID)
@@ -254,7 +249,6 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 				debugPrint("   [DEBUG] AsMessage() returned nil\n")
 			}
 
-			// Fallback to Raw content if AsMessage didn't work
 			if messageBody == "" && replyEvent.Content.Raw != nil {
 				debugPrint("   [DEBUG] Trying to extract from Raw content...\n")
 				if rawBody, ok := replyEvent.Content.Raw["body"].(string); ok && rawBody != "" {
@@ -262,7 +256,6 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 					messageSender = replyEvent.Sender.String()
 					debugPrint("   [DEBUG] Extracted from Raw: body='%s', sender='%s'\n", messageBody, messageSender)
 
-					// Check for RelatesTo in Raw content
 					if relatesTo, ok := replyEvent.Content.Raw["m.relates_to"].(map[string]interface{}); ok {
 						if inReplyTo, ok := relatesTo["m.in_reply_to"].(map[string]interface{}); ok {
 							if eventID, ok := inReplyTo["event_id"].(string); ok {
@@ -287,7 +280,6 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 			}
 		}
 
-		// Build context from thread (reverse order so oldest is first)
 		if len(thread) > 0 {
 			replyContext = "[Previous conversation context]\n\n"
 			for i := len(thread) - 1; i >= 0; i-- {
@@ -315,13 +307,13 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		reply := "**Matrix Gemini Bot**\n\n" +
 			"**Created by:** Ayush Sharma (@theayusharma)\n" +
 			"**GitHub:** https://github.com/theayusharma/matrixGemini\n" +
-			"**AI Model:** Google Gemini 2.0 Flash Exp\n" +
-			"**Encryption:** Enabled (E2EE Supported)\n\n" +
+			"**Default Model:** Google Gemini 2.0 Flash Exp\n" +
+			"**Encryption:** E2EE not Supported\n\n" +
 			"**Usage:**\n" +
 			"Mention me with `@test:localhost` or `@gemini` to chat\n" +
 			"Use `/about` to see this information\n" +
-			"Use `/pro` to use Gemini 2.0 Flash Thinking model for your query\n\n" +
-			"*Powered by Matrix & Google Gemini AI*"
+			"Use `/pro` to use Gemini 2.5 Pro model for your query\n\n" +
+			"*Powered by Matrix & Google Gemini AI & Cats*"
 		_, _ = client.SendText(ctx, roomID, reply)
 		debugPrint("   [SUCCESS] Sent /about response\n")
 		return
@@ -370,7 +362,35 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		debugPrint("   [PROMPT] %s\n", finalPrompt)
 	}
 
-	_, _ = client.UserTyping(ctx, roomID, true, 10000)
+	debugPrint("   [DEBUG] Sending typing indicator...\n")
+	typingResp, typingErr := client.UserTyping(ctx, roomID, true, 30000)
+	if typingErr != nil {
+		debugLog("   [ERROR] Failed to send initial typing indicator: %v", typingErr)
+	} else {
+		debugPrint("   [DEBUG] Typing indicator sent successfully: %+v\n", typingResp)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	stopTyping := make(chan bool, 1)
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopTyping:
+				return
+			case <-ticker.C:
+				_, err := client.UserTyping(ctx, roomID, true, 30000)
+				if err != nil {
+					debugLog("   [ERROR] Failed to refresh typing indicator: %v", err)
+				} else {
+					debugPrint("   [DEBUG] Typing indicator refreshed at %v\n", time.Now().Format("15:04:05"))
+				}
+			}
+		}
+	}()
 
 	debugPrint("   [PROCESSING] Asking Gemini...\n")
 
@@ -383,7 +403,13 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		reply, err = gemini.Ask(ctx, finalPrompt)
 	}
 
+	select {
+	case stopTyping <- true:
+	default:
+	}
+	time.Sleep(100 * time.Millisecond)
 	_, _ = client.UserTyping(ctx, roomID, false, 0)
+	debugPrint("   [DEBUG] Stopped typing indicator\n")
 
 	if err != nil {
 		reply = "Sorry, I encountered an error: " + err.Error()
@@ -398,6 +424,4 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 	} else {
 		debugPrint("   [SENT] Response sent to room\n")
 	}
-
-	_, _ = client.UserTyping(ctx, roomID, false, 0)
 }
