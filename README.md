@@ -18,6 +18,11 @@ CGO_ENABLED=1 go build
 ./geminiMatrix
 ```
 
+Production build (stripped):
+```bash
+CGO_ENABLED=1 go build -ldflags="-s -w" -trimpath
+```
+
 Create `.env`:
 ```env
 GEMINI_API_KEY=your_key
