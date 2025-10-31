@@ -70,16 +70,17 @@ func main() {
 	if err != nil {
 		log.Fatal("Login failed:", err)
 	}
-	
+
 	debugPrint("Logged in as %s\n", resp.UserID)
 	debugPrint("Access Token: %s\n", resp.AccessToken)
 
 	debugPrint("[INFO] Setting up encryption support...\n")
+
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("go-neb-password"), "matrix-bot-crypto.db")
+
 	if err != nil {
 		debugLog("[WARNING] Failed to create crypto helper: %v", err)
 		debugPrint("[WARNING] Bot will work in unencrypted rooms only\n")
-		cryptoHelper = nil
 	} else {
 		cryptoHelper.LoginAs = &mautrix.ReqLogin{
 			Type: mautrix.AuthTypePassword,
@@ -94,27 +95,23 @@ func main() {
 		if err != nil {
 			debugLog("[WARNING] Failed to initialize crypto: %v", err)
 			debugPrint("[WARNING] Bot will work in unencrypted rooms only\n")
-			cryptoHelper = nil
 		} else {
 			client.Crypto = cryptoHelper
-
-			syncer := client.Syncer.(*mautrix.DefaultSyncer)
-			syncer.ParseEventContent = true
-			syncer.ParseErrorHandler = func(evt *event.Event, err error) bool {
-				debugLog("[CRYPTO ERROR] Failed to parse/decrypt event %s in %s: %v", evt.ID, evt.RoomID, err)
-				return true
-			}
-
 			debugPrint("[SUCCESS] Encryption support enabled\n")
 		}
+	}
+
+	syncer := client.Syncer.(*mautrix.DefaultSyncer)
+	syncer.ParseEventContent = true
+	syncer.ParseErrorHandler = func(evt *event.Event, err error) bool {
+		debugLog("[CRYPTO ERROR] Failed to parse/decrypt event %s in %s: %v", evt.ID, evt.RoomID, err)
+		return true
 	}
 
 	gemini, err := NewGeminiClient(geminiAPIKey)
 	if err != nil {
 		log.Fatal("Gemini init failed:", err)
 	}
-
-	syncer := client.Syncer.(*mautrix.DefaultSyncer)
 
 	joinedRooms := make(map[id.RoomID]bool)
 
@@ -146,25 +143,29 @@ func main() {
 	})
 
 	syncer.OnEventType(event.EventEncrypted, func(ctx context.Context, ev *event.Event) {
-		debugPrint("[ENCRYPTED] Received encrypted event in room %s from %s\n", ev.RoomID, ev.Sender)
+		debugPrint("[ENCRYPTED] Received encrypted event in room %s from %s at %v\n", ev.RoomID, ev.Sender, time.UnixMilli(ev.Timestamp))
 		debugPrint("[ENCRYPTED] Event will be auto-decrypted by cryptohelper\n")
 	})
 
 	syncer.OnEventType(event.EventMessage, func(ctx context.Context, ev *event.Event) {
 		if ev.Sender == client.UserID {
+			debugPrint("[SKIP] Ignoring message from self\n")
 			return
 		}
 
-		if time.UnixMilli(ev.Timestamp).Before(startTime) {
-			debugPrint("[INFO] Skipping old unencrypted message from before bot start\n")
+		msgTime := time.UnixMilli(ev.Timestamp)
+		if msgTime.Before(startTime) {
+			debugPrint("[INFO] Skipping old message from before bot start (msg: %v, start: %v)\n", msgTime, startTime)
 			return
 		}
 
 		msg := ev.Content.AsMessage()
 		if msg == nil {
+			debugPrint("[WARNING] AsMessage() returned nil for event %s\n", ev.ID)
 			return
 		}
 
+		debugPrint("[MESSAGE RECEIVED] Processing message from %s in %s\n", ev.Sender, ev.RoomID)
 		handleMessage(ctx, client, gemini, ev.RoomID, ev.Sender, msg)
 	})
 
@@ -307,8 +308,8 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 		reply := "**Matrix Gemini Bot**\n\n" +
 			"**Created by:** Ayush Sharma (@theayusharma)\n" +
 			"**GitHub:** https://github.com/theayusharma/matrixGemini\n" +
-			"**Default Model:** Google Gemini 2.0 Flash Exp\n" +
-			"**Encryption:** E2EE not Supported\n\n" +
+			"**Default Model:** Google Gemini 2.0 Flash :)\n" +
+			"**Encryption:** E2EE Supported\n\n" +
 			"**Usage:**\n" +
 			"Mention me with `@test:localhost` or `@gemini` to chat\n" +
 			"Use `/about` to see this information\n" +

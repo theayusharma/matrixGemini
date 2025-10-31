@@ -1,6 +1,6 @@
 # Matrix Gemini Bot
 
-A @Gemini tag bot for Matrix (E2EE not supported yet) .
+A @Gemini tag bot for Matrix (E2EE supported)  .
 
 ## Features
 
