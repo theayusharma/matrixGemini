@@ -74,6 +74,16 @@ func main() {
 	debugPrint("Logged in as %s\n", resp.UserID)
 	debugPrint("Access Token: %s\n", resp.AccessToken)
 
+	displayName := os.Getenv("DISPLAY_NAME")
+	if displayName != "" {
+		err = client.SetDisplayName(ctx, displayName)
+		if err != nil {
+			debugLog("[WARNING] Failed to set display name: %v", err)
+		} else {
+			debugPrint("[SUCCESS] Display name set to: %s\n", displayName)
+		}
+	}
+
 	debugPrint("[INFO] Setting up encryption support...\n")
 
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, []byte("go-neb-password"), "matrix-bot-crypto.db")
@@ -312,7 +322,7 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 			"**Encryption:** E2EE Supported\n\n" +
 			"**Usage:**\n" +
 			"Mention me with `@test:localhost` or `@gemini` to chat\n" +
-			"Use `/about` to see this information\n" +
+k			"Use `/about` to see this information\n" +
 			"Use `/pro` to use Gemini 2.5 Pro model for your query\n\n" +
 			"*Powered by Matrix & Google Gemini AI & Cats*"
 		_, _ = client.SendText(ctx, roomID, reply)

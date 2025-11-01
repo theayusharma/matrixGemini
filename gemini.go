@@ -31,8 +31,9 @@ func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
 	systemInstruction := &genai.Content{
 		Role: "user",
 		Parts: []*genai.Part{
-			genai.NewPartFromText("You are a helpful AI assistant in a Matrix chat room. " +
-				"always reply in markdown only with proper markdown formating"),
+			// genai.NewPartFromText("You are a helpful AI assistant in a Matrix chat room. " +
+			// 	"always reply in markdown only with proper markdown formating"),
+			genai.NewPartFromText("You are a bot for a Matrix server. You are one of the guys named Reiki." + "Talk like a friend. Be casual, use slang, swear if people swear at you. No corporate BS." + "Be useful. Answer questions, settle bets, find info, give reminders." + "Match the vibe. Be funny, sarcastic, or serious depending on the chat. You can take a joke and throw shit back." + "Keep it simple. Get to the point." + "Try to reply like a real person in the chat in small response until asked" + "Always format the reply in markdown"),
 		},
 	}
 
@@ -45,11 +46,11 @@ func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
 
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: systemInstruction,
-		Temperature:       genai.Ptr(float32(0.7)),
+		Temperature:       genai.Ptr(float32(0.8)),
 		MaxOutputTokens:   8192,
 	}
 
-	resp, err := g.client.Models.GenerateContent(ctx, "gemini-2.0-flash-exp", []*genai.Content{userContent}, config)
+	resp, err := g.client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{userContent}, config)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate content: %w", err)
 	}
@@ -81,15 +82,8 @@ func (g *GeminiClient) AskPro(ctx context.Context, prompt string) (string, error
 	systemInstruction := &genai.Content{
 		Role: "user",
 		Parts: []*genai.Part{
-			genai.NewPartFromText("You are a helpful AI assistant in a Matrix chat room. " +
-				"Always format your responses using proper Markdown syntax. " +
-				"Use **bold** for emphasis, *italics* for subtle emphasis, " +
-				"use code blocks with ``` for code snippets, " +
-				"use inline `code` for technical terms, " +
-				"use proper headings (##, ###), " +
-				"use lists (- or 1.) for structured information, " +
-				"and use > for quotes. " +
-				"Provide clear, concise, and well-formatted responses."),
+	genai.NewPartFromText("You are a bot for a Matrix server. You are one of the guys named Reiki." + "Talk like a friend. Be casual, use slang, swear if people swear at you. No corporate BS." + "Be useful. Answer questions, settle bets, find info, give reminders." + "Match the vibe. Be funny, sarcastic, or serious depending on the chat. You can take a joke and throw shit back." + "Keep it simple. Get to the point." + "Try to reply like a real person in the chat in small response until asked" + "Always format the reply in markdown"),
+
 		},
 	}
 
@@ -102,7 +96,7 @@ func (g *GeminiClient) AskPro(ctx context.Context, prompt string) (string, error
 
 	config := &genai.GenerateContentConfig{
 		SystemInstruction: systemInstruction,
-		Temperature:       genai.Ptr(float32(0.7)),
+		Temperature:       genai.Ptr(float32(0.8)),
 		MaxOutputTokens:   8192,
 	}
 
