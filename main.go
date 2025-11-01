@@ -322,7 +322,7 @@ func handleMessage(ctx context.Context, client *mautrix.Client, gemini *GeminiCl
 			"**Encryption:** E2EE Supported\n\n" +
 			"**Usage:**\n" +
 			"Mention me with `@test:localhost` or `@gemini` to chat\n" +
-k			"Use `/about` to see this information\n" +
+			"Use `/about` to see this information\n" +
 			"Use `/pro` to use Gemini 2.5 Pro model for your query\n\n" +
 			"*Powered by Matrix & Google Gemini AI & Cats*"
 		_, _ = client.SendText(ctx, roomID, reply)
