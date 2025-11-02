@@ -2,3 +2,9 @@
 !.env.exm
 main**
 !main.go
+
+geminiMatrix
+
+matrix-bot-crypto.db
+matrix-bot-crypto.db-shm
+matrix-bot-crypto.db-wal
