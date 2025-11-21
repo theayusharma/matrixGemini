@@ -192,18 +192,51 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 
 	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
 		originalEventID := msg.RelatesTo.InReplyTo.EventID
+		log.Printf("🔍 Found reply to event ID: %s. Fetching original...", originalEventID)
+
 		originalEvent, err := b.Client.GetEvent(ctx, evt.RoomID, originalEventID)
+		if err != nil {
+			log.Printf("❌ Failed to fetch original event: %v", err)
+			return
+		}
 
-		if err == nil && originalEvent.Type == event.EventMessage {
-			_ = originalEvent.Content.ParseRaw(originalEvent.Type)
+		originalEvent.RoomID = evt.RoomID
 
-			originalMsg, ok := originalEvent.Content.Parsed.(*event.MessageEventContent)
-			if ok && originalMsg.MsgType == event.MsgImage {
-				log.Printf("🖼️ Detected reply to image! Processing...")
-				originalMsg.Body = msg.Body
-				b.handleImageMessage(ctx, originalEvent, originalMsg)
+		err = originalEvent.Content.ParseRaw(originalEvent.Type)
+		if err != nil {
+			log.Printf("❌ Failed to parse raw event content: %v", err)
+			return
+		}
+
+		if originalEvent.Type == event.EventEncrypted {
+			log.Printf("🔐 Original event is Encrypted. Attempting to decrypt...")
+
+			if b.Client.Crypto == nil {
+				log.Printf("❌ Crypto is disabled in config!")
 				return
 			}
+
+			decryptedEvent, err := b.Client.Crypto.Decrypt(ctx, originalEvent)
+			if err != nil {
+				log.Printf("❌ Decryption failed: %v", err)
+				b.sendReply(evt.RoomID, "Error: Decryption failed. (Note: If you just verified me, please resend the image).")
+				return
+			}
+
+			originalEvent = decryptedEvent
+			log.Printf("🔓 Decryption successful!")
+		}
+
+		_ = originalEvent.Content.ParseRaw(originalEvent.Type)
+
+		originalMsg, ok := originalEvent.Content.Parsed.(*event.MessageEventContent)
+		if ok && originalMsg.MsgType == event.MsgImage {
+			log.Printf("🖼️ Detected reply to IMAGE! Processing...")
+			originalMsg.Body = msg.Body
+			b.handleImageMessage(ctx, originalEvent, originalMsg)
+			return
+		} else {
+			log.Printf("ℹ️ Reply target was not an image (Type: %s)", originalEvent.Type.String())
 		}
 	}
 
