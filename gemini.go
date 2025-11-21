@@ -19,12 +19,19 @@ type GeminiClient struct {
 type GeminiRequest struct {
 	Contents         []Content         `json:"contents"`
 	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+	Tools            []Tool            `json:"tools,omitempty"`
 }
 
 type GeminiVisionRequest struct {
 	Contents         []VisionContent   `json:"contents"`
 	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
 }
+
+type Tool struct {
+	GoogleSearch *GoogleSearch `json:"googleSearch,omitempty"`
+}
+
+type GoogleSearch struct{}
 
 type GenerationConfig struct {
 	Temperature     float32 `json:"temperature,omitempty"`
@@ -68,8 +75,17 @@ type UsageMetadata struct {
 	TotalTokenCount  int `json:"totalTokenCount"`
 }
 
-func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temperature float32, maxTokens int) (string, int, error) {
+func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temperature float32, maxTokens int, useSearch bool) (string, int, error) {
 	fullPrompt := systemPrompt + "\n\n" + prompt
+
+	var tools []Tool
+	if useSearch {
+		tools = []Tool{
+			{
+				GoogleSearch: &GoogleSearch{},
+			},
+		}
+	}
 
 	requestBody := GeminiRequest{
 		Contents: []Content{
@@ -83,6 +99,7 @@ func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temp
 			Temperature:     temperature,
 			MaxOutputTokens: maxTokens,
 		},
+		Tools: tools,
 	}
 
 	jsonData, err := json.Marshal(requestBody)
@@ -217,7 +234,7 @@ func TestGemini(config *GeminiConfig, systemPrompt string) error {
 		Model:   config.Model,
 	}
 
-	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 500)
+	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 400, false)
 	if err != nil {
 		return err
 	}

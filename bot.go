@@ -272,6 +272,22 @@ func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) 
 		b.Context.ClearConversation(roomID, userID)
 		b.sendReply(roomID, "✅ Conversation history cleared.")
 
+	case "enable":
+		if len(parts) >= 3 && parts[2] == "search" {
+			b.UserCredits.SetSearchEnabled(userID, true)
+			b.sendReply(roomID, "✅ Google Search Grounding ENABLED for you.")
+		} else {
+			b.sendReply(roomID, "Usage: `!gemini enable search`")
+		}
+
+	case "disable":
+		if len(parts) >= 3 && parts[2] == "search" {
+			b.UserCredits.SetSearchEnabled(userID, false)
+			b.sendReply(roomID, "❌ Google Search Grounding DISABLED for you.")
+		} else {
+			b.sendReply(roomID, "Usage: `!gemini disable search`")
+		}
+
 	default:
 		b.sendReply(roomID, "Unknown command. Use `!gemini setkey` or `!gemini stats`")
 	}
@@ -292,7 +308,9 @@ func (b *Bot) processGeminiRequest(roomID id.RoomID, userID id.UserID, query str
 		clientToUse.APIKey = userKey
 	}
 
-	response, tokens, err := clientToUse.GenerateResponse(query, fullPrompt, b.Config.Temperature, b.Config.MaxResponseTokens)
+	useSearch := b.UserCredits.IsSearchEnabled(userID)
+
+	response, tokens, err := clientToUse.GenerateResponse(query, fullPrompt, b.Config.Temperature, b.Config.MaxResponseTokens, useSearch)
 	if err != nil {
 		log.Printf("Gemini error: %v", err)
 		b.sendReply(roomID, "Sorry, I'm having trouble connecting to Gemini right now.")

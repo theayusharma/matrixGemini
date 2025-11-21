@@ -13,10 +13,11 @@ import (
 )
 
 type UserCredit struct {
-	UserID     string   `json:"user_id"`
-	TokenCount int      `json:"token_count"`
-	APIKey     []byte   `json:"api_key"`
-	Nonce      [24]byte `json:"nonce"`
+	UserID        string   `json:"user_id"`
+	TokenCount    int      `json:"token_count"`
+	APIKey        []byte   `json:"api_key"`
+	Nonce         [24]byte `json:"nonce"`
+	SearchEnabled bool     `json:"search_enabled"`
 }
 
 type CreditManager struct {
@@ -166,4 +167,28 @@ func (cm *CreditManager) GetUserStats(userID id.UserID) (int, bool) {
 
 	hasOwnKey := user.APIKey != nil
 	return user.TokenCount, hasOwnKey
+}
+
+func (cm *CreditManager) SetSearchEnabled(userID id.UserID, enabled bool) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	userIDStr := string(userID)
+	if cm.users[userIDStr] == nil {
+		cm.users[userIDStr] = &UserCredit{UserID: userIDStr}
+	}
+
+	cm.users[userIDStr].SearchEnabled = enabled
+	cm.saveToFile()
+}
+
+func (cm *CreditManager) IsSearchEnabled(userID id.UserID) bool {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+
+	user, exists := cm.users[string(userID)]
+	if !exists {
+		return false
+	}
+	return user.SearchEnabled
 }
