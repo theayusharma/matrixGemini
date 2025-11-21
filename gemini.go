@@ -16,7 +16,13 @@ type GeminiClient struct {
 }
 
 type GeminiRequest struct {
-	Contents []Content `json:"contents"`
+	Contents         []Content         `json:"contents"`
+	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+}
+
+type GenerationConfig struct {
+	Temperature     float32 `json:"temperature,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
 }
 
 type Content struct {
@@ -41,7 +47,7 @@ type UsageMetadata struct {
 	TotalTokenCount  int `json:"totalTokenCount"`
 }
 
-func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string) (string, int, error) {
+func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temperature float32, maxTokens int) (string, int, error) {
 	fullPrompt := systemPrompt + "\n\n" + prompt
 
 	requestBody := GeminiRequest{
@@ -51,6 +57,10 @@ func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string) (str
 					{Text: fullPrompt},
 				},
 			},
+		},
+		GenerationConfig: &GenerationConfig{
+			Temperature:     temperature,
+			MaxOutputTokens: maxTokens,
 		},
 	}
 
@@ -101,6 +111,7 @@ func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string) (str
 	return responseText, tokenCount, nil
 }
 
+// only for testing connection
 func TestGemini(config *GeminiConfig, systemPrompt string) error {
 	client := &GeminiClient{
 		APIKey:  config.APIKey,
@@ -108,7 +119,7 @@ func TestGemini(config *GeminiConfig, systemPrompt string) error {
 		Model:   config.Model,
 	}
 
-	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt)
+	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 100)
 	if err != nil {
 		return err
 	}

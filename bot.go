@@ -16,8 +16,9 @@ type Bot struct {
 	Client      *mautrix.Client
 	Gemini      *GeminiClient
 	Config      *BotConfig
-	UserCredits *CreditManager
 	AutoJoin    bool
+	UserCredits *CreditManager
+	Context     *ContextManager
 }
 
 func NewBot(client *mautrix.Client, gemini *GeminiClient, botConfig *BotConfig, creditManager *CreditManager, autoJoin bool) *Bot {
@@ -25,8 +26,9 @@ func NewBot(client *mautrix.Client, gemini *GeminiClient, botConfig *BotConfig, 
 		Client:      client,
 		Gemini:      gemini,
 		Config:      botConfig,
-		UserCredits: creditManager,
 		AutoJoin:    autoJoin,
+		UserCredits: creditManager,
+		Context:     NewContextManager(botConfig.MaxConversationHistory),
 	}
 }
 
@@ -152,12 +154,25 @@ func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) 
 		}
 		b.sendReply(roomID, msg)
 
+	case "clear":
+		b.Context.ClearConversation(roomID, userID)
+		b.sendReply(roomID, "✅ Conversation history cleared.")
+
 	default:
 		b.sendReply(roomID, "Unknown command. Use `!gemini setkey` or `!gemini stats`")
 	}
 }
 
 func (b *Bot) processGeminiRequest(roomID id.RoomID, userID id.UserID, query string) {
+	b.Context.AddMessage(roomID, userID, "user", query)
+
+	history := b.Context.GetConversationHistory(roomID, userID)
+
+	fullPrompt := b.Config.SystemPrompt + "\n\n"
+	if history != "" {
+		fullPrompt += "Conversation history:\n" + history + "\n\n"
+	}
+
 	userKey, err := b.UserCredits.GetUserAPIKey(userID)
 
 	clientToUse := *b.Gemini
@@ -165,12 +180,14 @@ func (b *Bot) processGeminiRequest(roomID id.RoomID, userID id.UserID, query str
 		clientToUse.APIKey = userKey
 	}
 
-	response, tokens, err := clientToUse.GenerateResponse(query, b.Config.SystemPrompt)
+	response, tokens, err := clientToUse.GenerateResponse(query, fullPrompt, b.Config.Temperature, b.Config.MaxResponseTokens)
 	if err != nil {
 		log.Printf("Gemini error: %v", err)
 		b.sendReply(roomID, "Sorry, I'm having trouble connecting to Gemini right now.")
 		return
 	}
+
+	b.Context.AddMessage(roomID, userID, "assistant", response)
 
 	b.UserCredits.RecordUsage(userID, tokens)
 

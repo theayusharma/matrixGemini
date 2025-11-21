@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 
@@ -10,8 +11,13 @@ import (
 )
 
 func main() {
+	var configPath string
+	flag.StringVar(&configPath, "config", "config.toml", "Path to config file")
+	flag.StringVar(&configPath, "c", "config.toml", "Path to config file (shorthand)")
+	flag.Parse()
+
 	// load config
-	config, err := LoadConfig("config.toml")
+	config, err := LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}

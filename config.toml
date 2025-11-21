@@ -17,6 +17,7 @@ name = "Bot"
 system_prompt = "You are a helpful Matrix bot."
 max_response_tokens = 500
 temperature = 0.7
+max_conversation_history = 10
 
 [credits]
 file_path = "./user_credits.json"

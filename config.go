@@ -29,10 +29,11 @@ type GeminiConfig struct {
 }
 
 type BotConfig struct {
-	Name              string  `toml:"name"`
-	SystemPrompt      string  `toml:"system_prompt"`
-	MaxResponseTokens int     `toml:"max_response_tokens"`
-	Temperature       float32 `toml:"temperature"`
+	Name                   string  `toml:"name"`
+	SystemPrompt           string  `toml:"system_prompt"`
+	MaxResponseTokens      int     `toml:"max_response_tokens"`
+	Temperature            float32 `toml:"temperature"`
+	MaxConversationHistory int     `toml:"max_conversation_history"`
 }
 
 type CreditsConfig struct {
