@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,11 @@ type GeminiRequest struct {
 	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
 }
 
+type GeminiVisionRequest struct {
+	Contents         []VisionContent   `json:"contents"`
+	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+}
+
 type GenerationConfig struct {
 	Temperature     float32 `json:"temperature,omitempty"`
 	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
@@ -27,6 +33,20 @@ type GenerationConfig struct {
 
 type Content struct {
 	Parts []Part `json:"parts"`
+}
+
+type VisionContent struct {
+	Parts []VisionPart `json:"parts"`
+}
+
+type VisionPart struct {
+	Text       string      `json:"text,omitempty"`
+	InlineData *InlineData `json:"inlineData,omitempty"`
+}
+
+type InlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
 }
 
 type Part struct {
@@ -39,7 +59,8 @@ type GeminiResponse struct {
 }
 
 type Candidate struct {
-	Content Content `json:"content"`
+	Content      Content `json:"content"`
+	FinishReason string  `json:"finishReason,omitempty"`
 }
 
 type UsageMetadata struct {
@@ -98,20 +119,97 @@ func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temp
 		return "", 0, fmt.Errorf("no response candidates from Gemini")
 	}
 
-	// Extract token count if available, otherwise estimate
+	candidate := geminiResp.Candidates[0]
+	if len(candidate.Content.Parts) == 0 {
+		if candidate.FinishReason != "" {
+			return "", 0, fmt.Errorf("Gemini blocked response. Reason: %s", candidate.FinishReason)
+		}
+		return "", 0, fmt.Errorf("Gemini returned an empty response")
+	}
+
 	tokenCount := 0
 	if geminiResp.UsageMetadata != nil {
 		tokenCount = geminiResp.UsageMetadata.TotalTokenCount
 	} else {
-		// Rough estimate: ~4 characters per token
 		tokenCount = len(fullPrompt) / 4
 	}
 
-	responseText := geminiResp.Candidates[0].Content.Parts[0].Text
+	responseText := candidate.Content.Parts[0].Text
 	return responseText, tokenCount, nil
 }
 
-// only for testing connection
+func (g *GeminiClient) GenerateVisionResponse(prompt string, systemPrompt string, imageData []byte, mimeType string) (string, int, error) {
+	fullPrompt := systemPrompt + "\n\n" + prompt
+
+	imageBase64 := base64.StdEncoding.EncodeToString(imageData)
+
+	requestBody := GeminiVisionRequest{
+		Contents: []VisionContent{
+			{
+				Parts: []VisionPart{
+					{Text: fullPrompt},
+					{
+						InlineData: &InlineData{
+							MimeType: mimeType,
+							Data:     imageBase64,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	baseURL := strings.TrimSuffix(g.BaseURL, "/")
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, g.Model, g.APIKey)
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", 0, fmt.Errorf("vision API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read vision response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("vision API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		return "", 0, fmt.Errorf("failed to parse vision response: %w", err)
+	}
+
+	if len(geminiResp.Candidates) == 0 {
+		return "", 0, fmt.Errorf("no response candidates from Gemini vision")
+	}
+
+	candidate := geminiResp.Candidates[0]
+	if len(candidate.Content.Parts) == 0 {
+		if candidate.FinishReason != "" {
+			return "", 0, fmt.Errorf("Gemini blocked vision response. Reason: %s", candidate.FinishReason)
+		}
+		return "", 0, fmt.Errorf("Gemini returned an empty vision response")
+	}
+
+	tokenCount := 0
+	if geminiResp.UsageMetadata != nil {
+		tokenCount = geminiResp.UsageMetadata.TotalTokenCount
+	} else {
+		tokenCount = len(prompt) / 4
+	}
+
+	responseText := candidate.Content.Parts[0].Text
+	return responseText, tokenCount, nil
+}
+
 func TestGemini(config *GeminiConfig, systemPrompt string) error {
 	client := &GeminiClient{
 		APIKey:  config.APIKey,
@@ -119,7 +217,7 @@ func TestGemini(config *GeminiConfig, systemPrompt string) error {
 		Model:   config.Model,
 	}
 
-	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 100)
+	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 500)
 	if err != nil {
 		return err
 	}

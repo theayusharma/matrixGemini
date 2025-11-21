@@ -66,6 +66,97 @@ func (b *Bot) handleInvite(ctx context.Context, evt *event.Event) {
 	}
 }
 
+func (b *Bot) handleImageMessage(ctx context.Context, evt *event.Event, msg *event.MessageEventContent) {
+	userKey, err := b.UserCredits.GetUserAPIKey(evt.Sender)
+	if err != nil || userKey == "" {
+		b.sendReply(evt.RoomID, "To analyze images, you need to set your Gemini API key first. Use `!gemini setkey <your_api_key>`")
+		return
+	}
+
+	b.sendReply(evt.RoomID, "👀 Analyzing image...")
+
+	var data []byte
+
+	if msg.File != nil {
+		cURI, err := msg.File.URL.Parse()
+		if err != nil {
+			log.Printf("Failed to parse encrypted file URL: %v", err)
+			b.sendReply(evt.RoomID, "Error: Invalid file URL.")
+			return
+		}
+		ciphertext, err := b.Client.DownloadBytes(ctx, cURI)
+		if err != nil {
+			log.Printf("Failed to download encrypted file: %v", err)
+			b.sendReply(evt.RoomID, "Error: Could not download encrypted image.")
+			return
+		}
+		data, err = msg.File.Decrypt(ciphertext)
+		if err != nil {
+			log.Printf("Failed to decrypt file: %v", err)
+			b.sendReply(evt.RoomID, "Error: Could not decrypt image.")
+			return
+		}
+	} else if msg.URL != "" {
+		cURI, err := msg.URL.Parse()
+		if err != nil {
+			log.Printf("Failed to parse URL: %v", err)
+			b.sendReply(evt.RoomID, "Error: Invalid image URL.")
+			return
+		}
+		data, err = b.Client.DownloadBytes(ctx, cURI)
+		if err != nil {
+			log.Printf("Failed to download media: %v", err)
+			b.sendReply(evt.RoomID, "Error: Could not download image.")
+			return
+		}
+	} else {
+		b.sendReply(evt.RoomID, "Error: No image URL or File found in message.")
+		return
+	}
+
+	prompt := strings.TrimSpace(msg.Body)
+	prompt = strings.ReplaceAll(prompt, "@"+string(b.Client.UserID), "")
+	prompt = strings.ReplaceAll(prompt, b.Config.Name, "")
+	prompt = strings.TrimSpace(prompt)
+
+	if prompt == "" {
+		prompt = "Describe what you see in this image in detail."
+	}
+
+	mimeType := "image/jpeg"
+	if info := msg.GetInfo(); info != nil && info.MimeType != "" {
+		mimeType = info.MimeType
+	}
+
+	go b.processVisionRequest(evt.RoomID, evt.Sender, prompt, data, mimeType)
+}
+
+func (b *Bot) processVisionRequest(roomID id.RoomID, userID id.UserID, prompt string, imageData []byte, mimeType string) {
+	clientToUse := *b.Gemini
+
+	userKey, err := b.UserCredits.GetUserAPIKey(userID)
+	if err == nil && userKey != "" {
+		clientToUse.APIKey = userKey
+	}
+
+	response, tokens, err := clientToUse.GenerateVisionResponse(prompt, b.Config.SystemPrompt, imageData, mimeType)
+	if err != nil {
+		log.Printf("Gemini vision error: %v", err)
+		b.sendReply(roomID, "Sorry, I'm having trouble processing the image right now.")
+		return
+	}
+
+	b.Context.AddMessage(roomID, userID, "user", prompt)
+	b.Context.AddMessage(roomID, userID, "assistant", response)
+
+	b.UserCredits.RecordUsage(userID, tokens)
+
+	if len(response) > 2000 {
+		response = response[:2000] + "..."
+	}
+	b.sendReply(roomID, response)
+}
+
 func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 	// ignore bot's own msgs
 	if evt.Sender == b.Client.UserID {
@@ -77,16 +168,11 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	// only handle text msgs
 	msg, ok := evt.Content.Parsed.(*event.MessageEventContent)
 	if !ok {
 		return
 	}
-	if msg.MsgType != event.MsgText {
-		return
-	}
 
-	// check if mentioned or direct
 	isDirect := false
 	if strings.Contains(strings.ToLower(msg.Body), strings.ToLower(b.Config.Name)) {
 		isDirect = true
@@ -98,6 +184,34 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 	if !isDirect {
 		return // ignore messages not directed at the bot
 	}
+
+	if msg.MsgType == event.MsgImage {
+		b.handleImageMessage(ctx, evt, msg)
+		return
+	}
+
+	if msg.RelatesTo != nil && msg.RelatesTo.InReplyTo != nil {
+		originalEventID := msg.RelatesTo.InReplyTo.EventID
+		originalEvent, err := b.Client.GetEvent(ctx, evt.RoomID, originalEventID)
+
+		if err == nil && originalEvent.Type == event.EventMessage {
+			_ = originalEvent.Content.ParseRaw(originalEvent.Type)
+
+			originalMsg, ok := originalEvent.Content.Parsed.(*event.MessageEventContent)
+			if ok && originalMsg.MsgType == event.MsgImage {
+				log.Printf("🖼️ Detected reply to image! Processing...")
+				originalMsg.Body = msg.Body
+				b.handleImageMessage(ctx, originalEvent, originalMsg)
+				return
+			}
+		}
+	}
+
+	if msg.MsgType != event.MsgText {
+		return
+	}
+
+	log.Printf("📩 Processing message from %s: %s", evt.Sender, msg.Body)
 
 	// clean query
 	query := strings.TrimSpace(msg.Body)
@@ -164,8 +278,6 @@ func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) 
 }
 
 func (b *Bot) processGeminiRequest(roomID id.RoomID, userID id.UserID, query string) {
-	b.Context.AddMessage(roomID, userID, "user", query)
-
 	history := b.Context.GetConversationHistory(roomID, userID)
 
 	fullPrompt := b.Config.SystemPrompt + "\n\n"
@@ -187,6 +299,7 @@ func (b *Bot) processGeminiRequest(roomID id.RoomID, userID id.UserID, query str
 		return
 	}
 
+	b.Context.AddMessage(roomID, userID, "user", query)
 	b.Context.AddMessage(roomID, userID, "assistant", response)
 
 	b.UserCredits.RecordUsage(userID, tokens)
