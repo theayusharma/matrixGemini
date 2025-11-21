@@ -1,42 +1,53 @@
 # Matrix Gemini Bot
 
-A @Gemini tag bot for Matrix (E2EE supported)  .
+## 🛠️ Prerequisites
 
-## Features
+- **Go** installed.
+- **libolm** (Required for E2EE support):
+- A **Matrix Account** for the bot.
+- A **Google Gemini API Key** (Get one at [aistudio.google.com](https://aistudio.google.com)).
 
-- Responds to @mentions (`@botname` or `@gemini`)
-- End-to-end encryption support
-- Conversation context (5 messages)
-- Commands: tag bot @botname default usese Gemini 2.0 flash, `/about`, `/pro` (Gemini 2.5 Pro)
-- Markdown responses
+## 🚀 Installation & Setup
 
-## Setup
+1.  **Clone the repository:**
 
-```bash
-go mod download
-CGO_ENABLED=1 go build
-./geminiMatrix
-```
+    ```bash
+    git clone https://github.com/rjanupam/matrixGemini.git
+    cd matrixGemini
+    ```
 
-Production build (stripped):
-```bash
-CGO_ENABLED=1 go build -ldflags="-s -w" -trimpath
-```
+2.  **Install Go dependencies:**
 
-Create `.env`:
-```env
-GEMINI_API_KEY=your_key
-SERVER_UURRLL=https://matrix.example.com
-USERNAME=bot_username
-PASSS=bot_password
-DEBUG=false
-```
+    ```bash
+    go mod tidy
+    ```
 
-## Requirements
+3.  **Configure the bot:**
+    Copy the example config and edit it per need.
 
-- Go 1.21+
-- libolm
-- SQLite3
+    **Edit `config.toml`:**
+    - Set `homeserver`, `user_id`, and `password` (or use env var `MATRIX_PASSWORD`).
+    - Set your `api_key` in the `[gemini]` section.
+    - Generate random strings for `pickle_key` and `master_key` (for security).
 
-Created by my Cat 😺
+4.  **Run the bot:**
+    ```bash
+    go run . -c /path/to/config.toml
+    ```
 
+## 🎮 Commands
+
+| Command                  | Description                                       |
+| :----------------------- | :------------------------------------------------ |
+| `!gemini setkey <key>`   | Set your own personal Gemini API key.             |
+| `!gemini enable search`  | Enable Google Search grounding for your requests. |
+| `!gemini disable search` | Disable Google Search grounding.                  |
+| `!gemini stats`          | Check your token usage and key status.            |
+| `!gemini clear`          | Clear your conversation history with the bot.     |
+
+## 📸 Image Analysis
+
+Rakka can analyze images in two ways:
+
+1.  **Direct Upload:** Upload an image with a caption that mentions the bot (e.g., _"@Rakka describe this"_).
+2.  **Reply:** Reply to any image in the chat with _"@Rakka analyze this"_.
