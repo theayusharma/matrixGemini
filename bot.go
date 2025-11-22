@@ -10,6 +10,8 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
+
+	"geminiMatrix/modules"
 )
 
 type Bot struct {
@@ -69,7 +71,8 @@ func (b *Bot) handleInvite(ctx context.Context, evt *event.Event) {
 func (b *Bot) handleImageMessage(ctx context.Context, evt *event.Event, msg *event.MessageEventContent) {
 	userKey, err := b.UserCredits.GetUserAPIKey(evt.Sender)
 	if err != nil || userKey == "" {
-		b.sendReply(evt.RoomID, "To analyze images, you need to set your Gemini API key first. Use `!gemini setkey <your_api_key>`")
+		prefix := "!" + strings.ToLower(b.Config.Name)
+		b.sendReply(evt.RoomID, fmt.Sprintf("To analyze images, you need to set your Gemini API key first. Use `!%s setkey <your_api_key>`", prefix))
 		return
 	}
 
@@ -173,11 +176,14 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 		return
 	}
 
+	cmdPrefix := "!" + strings.ToLower(b.Config.Name)
+	msgBodyLower := strings.ToLower(msg.Body)
+
 	isDirect := false
-	if strings.Contains(strings.ToLower(msg.Body), strings.ToLower(b.Config.Name)) {
+	if strings.Contains(msgBodyLower, strings.ToLower(b.Config.Name)) {
 		isDirect = true
 	}
-	if strings.HasPrefix(msg.Body, "!gemini") {
+	if strings.HasPrefix(msgBodyLower, cmdPrefix) {
 		isDirect = true
 	}
 
@@ -256,14 +262,14 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 		return
 	}
 
-	if strings.HasPrefix(msg.Body, "!gemini") {
+	if strings.HasPrefix(msgBodyLower, cmdPrefix) {
 		b.handleCommand(evt.RoomID, evt.Sender, msg.Body)
 		return
 	}
 
 	// check credits
 	if !b.UserCredits.CanUseAPI(evt.Sender) {
-		b.sendReply(evt.RoomID, "Sorry, you've reached your API usage limit. Use `!gemini setkey <your_api_key>` to add your own key.")
+		b.sendReply(evt.RoomID, fmt.Sprintf("Sorry, you've reached your API usage limit. Use `!%s setkey <your_api_key>` to add your own key.", cmdPrefix))
 		return
 	}
 
@@ -273,15 +279,17 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event) {
 
 func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) {
 	parts := strings.Fields(command)
+	prefix := "!" + b.Config.Name
+
 	if len(parts) < 2 {
-		b.sendReply(roomID, "Usage: `!gemini setkey <api_key>` or `!gemini stats`")
+		b.sendReply(roomID, fmt.Sprintf("Usage: `%s setkey`, `%s anime`, `%s urban`, `%s remind`", prefix, prefix, prefix, prefix))
 		return
 	}
 
-	switch parts[1] {
+	switch strings.ToLower(parts[1]) {
 	case "setkey":
 		if len(parts) < 3 {
-			b.sendReply(roomID, "Usage: `!gemini setkey <your_gemini_api_key>`")
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s setkey <your_api_key>`", prefix))
 			return
 		}
 		err := b.UserCredits.SetUserAPIKey(userID, parts[2])
@@ -310,7 +318,7 @@ func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) 
 			b.UserCredits.SetSearchEnabled(userID, true)
 			b.sendReply(roomID, "✅ Google Search Grounding ENABLED for you.")
 		} else {
-			b.sendReply(roomID, "Usage: `!gemini enable search`")
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s enable search`", prefix))
 		}
 
 	case "disable":
@@ -318,11 +326,86 @@ func (b *Bot) handleCommand(roomID id.RoomID, userID id.UserID, command string) 
 			b.UserCredits.SetSearchEnabled(userID, false)
 			b.sendReply(roomID, "❌ Google Search Grounding DISABLED for you.")
 		} else {
-			b.sendReply(roomID, "Usage: `!gemini disable search`")
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s disable search`", prefix))
+		}
+
+	case "anime":
+		if len(parts) < 3 {
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s anime <title>`", prefix))
+			return
+		}
+		query := strings.Join(parts[2:], " ")
+		b.sendReply(roomID, "🔍 Searching AniList...")
+
+		result, err := modules.GetAnimeInfo(query)
+		if err != nil {
+			b.sendReply(roomID, "Error: "+err.Error())
+			return
+		}
+		b.sendReply(roomID, result)
+
+	case "urban":
+		if len(parts) < 3 {
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s urban <term>`", prefix))
+			return
+		}
+		term := strings.Join(parts[2:], " ")
+
+		result, err := modules.GetUrbanDef(term)
+		if err != nil {
+			b.sendReply(roomID, "Error: "+err.Error())
+			return
+		}
+		b.sendReply(roomID, result)
+
+	case "remind":
+		if len(parts) < 4 {
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s remind <time> <text>`", prefix))
+			return
+		}
+		result, err := modules.SetReminder(b.Client, roomID, userID, parts[2:])
+		if err != nil {
+			b.sendReply(roomID, "Error: "+err.Error())
+			return
+		}
+		b.sendReply(roomID, result)
+
+	case "wiki":
+		if len(parts) < 3 {
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s wiki <topic>`", prefix))
+			return
+		}
+		query := strings.Join(parts[2:], " ")
+		b.sendReply(roomID, "📖 Searching Wikipedia...")
+
+		result, err := modules.GetWikiSummary(query)
+		if err != nil {
+			b.sendReply(roomID, "Error: "+err.Error())
+			return
+		}
+		b.sendReply(roomID, result)
+
+	case "8ball":
+		question := strings.Join(parts[2:], " ")
+		b.sendReply(roomID, modules.Magic8Ball(question))
+
+	case "roulette":
+		b.sendReply(roomID, modules.RussianRoulette(string(userID)))
+
+	case "poll":
+		rawArgs := strings.Fields(command)
+		if len(rawArgs) < 3 {
+			b.sendReply(roomID, fmt.Sprintf("Usage: `%s poll \"Question\" \"Opt1\" \"Opt2\"`", prefix))
+			return
+		}
+
+		err := modules.CreatePoll(b.Client, roomID, rawArgs[2:])
+		if err != nil {
+			b.sendReply(roomID, "Error: "+err.Error())
 		}
 
 	default:
-		b.sendReply(roomID, "Unknown command. Use `!gemini setkey` or `!gemini stats`")
+		b.sendReply(roomID, fmt.Sprintf("Unknown command. Try `%s help` or `%s anime`", prefix, prefix))
 	}
 }
 
