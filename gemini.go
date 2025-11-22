@@ -1,133 +1,246 @@
 package main
 
 import (
-	"context"
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-
-	"google.golang.org/genai"
+	"io"
+	"net/http"
+	"strings"
 )
 
 type GeminiClient struct {
-	client *genai.Client
+	APIKey  string
+	BaseURL string
+	Model   string
 }
 
-func NewGeminiClient(apiKey string) (*GeminiClient, error) {
-	ctx := context.Background()
-
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create genai client: %w", err)
-	}
-
-	return &GeminiClient{
-		client: client,
-	}, nil
+type GeminiRequest struct {
+	Contents         []Content         `json:"contents"`
+	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+	Tools            []Tool            `json:"tools,omitempty"`
 }
 
-func (g *GeminiClient) Ask(ctx context.Context, prompt string) (string, error) {
-	systemInstruction := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-			// genai.NewPartFromText("You are a helpful AI assistant in a Matrix chat room. " +
-			// 	"always reply in markdown only with proper markdown formating"),
-			genai.NewPartFromText("You are a bot for a Matrix server. You are one of the guys named Reiki." + "Talk like a friend. Be casual, use slang, swear if people swear at you. No corporate BS." + "Be useful. Answer questions, settle bets, find info, give reminders." + "Match the vibe. Be funny, sarcastic, or serious depending on the chat. You can take a joke and throw shit back." + "Keep it simple. Get to the point." + "Try to reply like a real person in the chat in small response until asked" + "Always format the reply in markdown"),
-		},
-	}
+type GeminiVisionRequest struct {
+	Contents         []VisionContent   `json:"contents"`
+	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
+}
 
-	userContent := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-			genai.NewPartFromText(prompt),
-		},
-	}
+type Tool struct {
+	GoogleSearch *GoogleSearch `json:"googleSearch,omitempty"`
+}
 
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: systemInstruction,
-		Temperature:       genai.Ptr(float32(0.8)),
-		MaxOutputTokens:   8192,
-	}
+type GoogleSearch struct{}
 
-	resp, err := g.client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{userContent}, config)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate content: %w", err)
-	}
+type GenerationConfig struct {
+	Temperature     float32 `json:"temperature,omitempty"`
+	MaxOutputTokens int     `json:"maxOutputTokens,omitempty"`
+}
 
-	if len(resp.Candidates) == 0 {
-		return "", fmt.Errorf("no response candidates returned")
-	}
+type Content struct {
+	Parts []Part `json:"parts"`
+}
 
-	candidate := resp.Candidates[0]
-	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
-		return "", fmt.Errorf("empty response content")
-	}
+type VisionContent struct {
+	Parts []VisionPart `json:"parts"`
+}
 
-	var responseText string
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			responseText += part.Text
+type VisionPart struct {
+	Text       string      `json:"text,omitempty"`
+	InlineData *InlineData `json:"inlineData,omitempty"`
+}
+
+type InlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
+type Part struct {
+	Text string `json:"text"`
+}
+
+type GeminiResponse struct {
+	Candidates    []Candidate    `json:"candidates"`
+	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+type Candidate struct {
+	Content      Content `json:"content"`
+	FinishReason string  `json:"finishReason,omitempty"`
+}
+
+type UsageMetadata struct {
+	PromptTokenCount int `json:"promptTokenCount"`
+	TotalTokenCount  int `json:"totalTokenCount"`
+}
+
+func (g *GeminiClient) GenerateResponse(prompt string, systemPrompt string, temperature float32, maxTokens int, useSearch bool) (string, int, error) {
+	fullPrompt := systemPrompt + "\n\n" + prompt
+
+	var tools []Tool
+	if useSearch {
+		tools = []Tool{
+			{
+				GoogleSearch: &GoogleSearch{},
+			},
 		}
 	}
 
-	if responseText == "" {
-		return "", fmt.Errorf("no text in response")
-	}
-
-	return responseText, nil
-}
-
-func (g *GeminiClient) AskPro(ctx context.Context, prompt string) (string, error) {
-	systemInstruction := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-	genai.NewPartFromText("You are a bot for a Matrix server. You are one of the guys named Reiki." + "Talk like a friend. Be casual, use slang, swear if people swear at you. No corporate BS." + "Be useful. Answer questions, settle bets, find info, give reminders." + "Match the vibe. Be funny, sarcastic, or serious depending on the chat. You can take a joke and throw shit back." + "Keep it simple. Get to the point." + "Try to reply like a real person in the chat in small response until asked" + "Always format the reply in markdown"),
-
+	requestBody := GeminiRequest{
+		Contents: []Content{
+			{
+				Parts: []Part{
+					{Text: fullPrompt},
+				},
+			},
 		},
-	}
-
-	userContent := &genai.Content{
-		Role: "user",
-		Parts: []*genai.Part{
-			genai.NewPartFromText(prompt),
+		GenerationConfig: &GenerationConfig{
+			Temperature:     temperature,
+			MaxOutputTokens: maxTokens,
 		},
+		Tools: tools,
 	}
 
-	config := &genai.GenerateContentConfig{
-		SystemInstruction: systemInstruction,
-		Temperature:       genai.Ptr(float32(0.8)),
-		MaxOutputTokens:   8192,
-	}
-
-	resp, err := g.client.Models.GenerateContent(ctx, "gemini-2.5-pro", []*genai.Content{userContent}, config)
+	jsonData, err := json.Marshal(requestBody)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate content: %w", err)
+		return "", 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	if len(resp.Candidates) == 0 {
-		return "", fmt.Errorf("no response candidates returned")
+	baseURL := strings.TrimSuffix(g.BaseURL, "/")
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, g.Model, g.APIKey)
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", 0, fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	candidate := resp.Candidates[0]
-	if candidate.Content == nil || len(candidate.Content.Parts) == 0 {
-		return "", fmt.Errorf("empty response content")
-	}
-
-	var responseText string
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			responseText += part.Text
+	if resp.StatusCode != http.StatusOK {
+		if strings.Contains(string(body), "<html") {
+			return "", 0, fmt.Errorf("API error %d (HTML response): check your Base URL and Model name. URL attempted: %s", resp.StatusCode, url)
 		}
+		return "", 0, fmt.Errorf("API error %d: %s", resp.StatusCode, string(body))
 	}
 
-	if responseText == "" {
-		return "", fmt.Errorf("no text in response")
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		return "", 0, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	return responseText, nil
+	if len(geminiResp.Candidates) == 0 {
+		return "", 0, fmt.Errorf("no response candidates from Gemini")
+	}
+
+	candidate := geminiResp.Candidates[0]
+	if len(candidate.Content.Parts) == 0 {
+		if candidate.FinishReason != "" {
+			return "", 0, fmt.Errorf("Gemini blocked response. Reason: %s", candidate.FinishReason)
+		}
+		return "", 0, fmt.Errorf("Gemini returned an empty response")
+	}
+
+	tokenCount := 0
+	if geminiResp.UsageMetadata != nil {
+		tokenCount = geminiResp.UsageMetadata.TotalTokenCount
+	} else {
+		tokenCount = len(fullPrompt) / 4
+	}
+
+	responseText := candidate.Content.Parts[0].Text
+	return responseText, tokenCount, nil
 }
 
-func (g *GeminiClient) Close() error {
+func (g *GeminiClient) GenerateVisionResponse(prompt string, systemPrompt string, imageData []byte, mimeType string) (string, int, error) {
+	fullPrompt := systemPrompt + "\n\n" + prompt
+
+	imageBase64 := base64.StdEncoding.EncodeToString(imageData)
+
+	requestBody := GeminiVisionRequest{
+		Contents: []VisionContent{
+			{
+				Parts: []VisionPart{
+					{Text: fullPrompt},
+					{
+						InlineData: &InlineData{
+							MimeType: mimeType,
+							Data:     imageBase64,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	baseURL := strings.TrimSuffix(g.BaseURL, "/")
+	url := fmt.Sprintf("%s/models/%s:generateContent?key=%s", baseURL, g.Model, g.APIKey)
+
+	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return "", 0, fmt.Errorf("vision API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read vision response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("vision API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var geminiResp GeminiResponse
+	if err := json.Unmarshal(body, &geminiResp); err != nil {
+		return "", 0, fmt.Errorf("failed to parse vision response: %w", err)
+	}
+
+	if len(geminiResp.Candidates) == 0 {
+		return "", 0, fmt.Errorf("no response candidates from Gemini vision")
+	}
+
+	candidate := geminiResp.Candidates[0]
+	if len(candidate.Content.Parts) == 0 {
+		if candidate.FinishReason != "" {
+			return "", 0, fmt.Errorf("Gemini blocked vision response. Reason: %s", candidate.FinishReason)
+		}
+		return "", 0, fmt.Errorf("Gemini returned an empty vision response")
+	}
+
+	tokenCount := 0
+	if geminiResp.UsageMetadata != nil {
+		tokenCount = geminiResp.UsageMetadata.TotalTokenCount
+	} else {
+		tokenCount = len(prompt) / 4
+	}
+
+	responseText := candidate.Content.Parts[0].Text
+	return responseText, tokenCount, nil
+}
+
+func TestGemini(config *GeminiConfig, systemPrompt string) error {
+	client := &GeminiClient{
+		APIKey:  config.APIKey,
+		BaseURL: config.BaseURL,
+		Model:   config.Model,
+	}
+
+	response, tokens, err := client.GenerateResponse("Hello! Reply with just your name if you can hear me.", systemPrompt, 0.7, 400, false)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ Gemini test successful!\n")
+	fmt.Printf("Response: %s\n", response)
+	fmt.Printf("Tokens used: %d\n", tokens)
 	return nil
 }
