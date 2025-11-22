@@ -1,7 +1,6 @@
-package main
+package core
 
 import (
-	"maunium.net/go/mautrix/id"
 	"strings"
 )
 
@@ -27,11 +26,11 @@ func NewContextManager(maxHistory int) *ContextManager {
 	}
 }
 
-func (cm *ContextManager) GetConversationKey(roomID id.RoomID, userID id.UserID) string {
+func (cm *ContextManager) GetConversationKey(roomID string, userID string) string {
 	return string(roomID) + "|" + string(userID)
 }
 
-func (cm *ContextManager) AddMessage(roomID id.RoomID, userID id.UserID, role, content string) {
+func (cm *ContextManager) AddMessage(roomID string, userID string, role, content string) {
 	key := cm.GetConversationKey(roomID, userID)
 
 	if cm.conversations[key] == nil {
@@ -52,7 +51,7 @@ func (cm *ContextManager) AddMessage(roomID id.RoomID, userID id.UserID, role, c
 	}
 }
 
-func (cm *ContextManager) GetConversationHistory(roomID id.RoomID, userID id.UserID) string {
+func (cm *ContextManager) GetConversationHistory(roomID string, userID string) string {
 	key := cm.GetConversationKey(roomID, userID)
 	conv := cm.conversations[key]
 
@@ -68,7 +67,7 @@ func (cm *ContextManager) GetConversationHistory(roomID id.RoomID, userID id.Use
 	return history.String()
 }
 
-func (cm *ContextManager) ClearConversation(roomID id.RoomID, userID id.UserID) {
+func (cm *ContextManager) ClearConversation(roomID string, userID string) {
 	key := cm.GetConversationKey(roomID, userID)
 	delete(cm.conversations, key)
 }
