@@ -1,98 +1,87 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	_ "github.com/mattn/go-sqlite3"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
+
+	"rakka/core"
+	"rakka/core/llm"
+	"rakka/platforms/discord"
+	"rakka/platforms/matrix"
 )
 
 func main() {
+	// parse flags
 	var configPath string
 	flag.StringVar(&configPath, "config", "config.toml", "Path to config file")
 	flag.StringVar(&configPath, "c", "config.toml", "Path to config file (shorthand)")
 	flag.Parse()
 
 	// load config
-	config, err := LoadConfig(configPath)
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// get matrix client
-	client, err := GetMatrixClient(&config.Matrix)
+	// initialize core
+	credits := core.NewCreditManager(cfg.Credits)
+	defer credits.ForceSave()
+
+	ctxMgr := core.NewContextManager(cfg.Bot.MaxHistory)
+
+	llmProvider, err := llm.New(cfg.LLM)
 	if err != nil {
-		log.Fatalf("Auth failed: %v", err)
+		log.Fatalf("Failed to init LLM: %v", err)
 	}
 
-	fmt.Println("✅ Successfully logged in as", config.Matrix.UserID)
-	fmt.Println("Device ID:", client.DeviceID)
+	brain := core.NewBot(llmProvider, &cfg.Bot, credits, ctxMgr)
+	core.RegisterDefaultCommands(brain)
 
-	// setup Encryption
-	if config.Matrix.CryptoDBPath != "" {
-		pickleKey := []byte(config.Matrix.PickleKey)
-		if len(pickleKey) == 0 {
-			pickleKey = []byte("default-pickle-key")
-		}
+	// initialize matrix platform
+	if cfg.Matrix.UserID != "" {
+		go func() {
+			matrixClient, err := matrix.GetMatrixClient(&cfg.Matrix)
+			if err != nil {
+				log.Printf("❌ Failed to create Matrix client: %v", err)
+				return
+			}
 
-		cryptoHelper, err := cryptohelper.NewCryptoHelper(client, pickleKey, config.Matrix.CryptoDBPath)
+			err = matrix.InitCrypto(matrixClient, cfg.Matrix.CryptoDBPath, cfg.Matrix.PickleKey)
+			if err != nil {
+				log.Printf("❌ Failed to initialize Matrix crypto: %v", err)
+				return
+			}
+
+			adapter := matrix.NewMatrixAdapter(matrixClient, brain, &cfg.Bot, cfg.Matrix.AutoJoinInvites)
+			log.Println("🚀 Starting Matrix bot...")
+			if err := adapter.Start(); err != nil {
+				log.Printf("Matrix Bot failed: %v", err)
+			}
+		}()
+	}
+
+	var discordBot *discord.DiscordAdapter
+	if cfg.Discord.Enabled && cfg.Discord.Token != "" {
+		discordBot, err = discord.NewDiscordAdapter(cfg.Discord.Token, brain)
 		if err != nil {
-			log.Fatalf("Failed to create crypto helper: %v", err)
+			log.Fatalf("Failed to create Discord client: %v", err)
 		}
 
-		err = cryptoHelper.Init(context.Background())
-		if err != nil {
-			log.Fatalf("Failed to init crypto: %v", err)
+		if err := discordBot.Start(); err != nil {
+			log.Fatalf("Failed to start Discord bot: %v", err)
 		}
-		client.Crypto = cryptoHelper
-		fmt.Println("🔒 End-to-End Encryption initialized")
-	} else {
-		fmt.Println("⚠️ Warning: Crypto DB path not set. E2EE disabled.")
+		defer discordBot.Close()
 	}
 
-	// matrix connection check
-	rooms, err := client.JoinedRooms(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to get joined rooms: %v", err)
-	}
-	fmt.Println("Joined rooms:", len(rooms.JoinedRooms))
+	log.Println("🤖 Bot is running on enabled platforms. Press CTRL+C to exit.")
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	<-sc
 
-	if config.Bot.Name != "" {
-		fmt.Printf("Updating profile display name to: %q...\n", config.Bot.Name)
-		if err := client.SetDisplayName(context.Background(), config.Bot.Name); err != nil {
-			log.Printf("⚠️ Warning: Failed to set display name: %v", err)
-		}
-	}
-
-	// gemini connection check
-	fmt.Println("\nGemini connection...")
-	err = TestGemini(&config.Gemini, config.Bot.SystemPrompt)
-	if err != nil {
-		log.Fatalf("Gemini connection failed: %v", err)
-	}
-
-	// initialize credit manager
-	creditManager := NewCreditManager(
-		config.Credits.FilePath,
-		config.Credits.GlobalLimit,
-		config.Credits.MasterKey,
-	)
-
-	fmt.Println("\n🚀 Starting bot...")
-
-	// create Gemini client
-	geminiClient := &GeminiClient{
-		APIKey:  config.Gemini.APIKey,
-		BaseURL: config.Gemini.BaseURL,
-		Model:   config.Gemini.Model,
-	}
-
-	// create and start bot
-	bot := NewBot(client, geminiClient, &config.Bot, creditManager, config.Matrix.AutoJoinInvites)
-	if err := bot.Start(); err != nil {
-		log.Fatalf("Bot failed: %v", err)
-	}
+	log.Println("Shutting down...")
 }

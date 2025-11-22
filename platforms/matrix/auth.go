@@ -1,4 +1,4 @@
-package main
+package matrix
 
 import (
 	"context"
@@ -10,11 +10,21 @@ import (
 	"os"
 	"syscall"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/nacl/secretbox"
 	"golang.org/x/term"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 )
+
+type Config struct {
+	Homeserver        string `toml:"homeserver"`
+	UserID            string `toml:"user_id"`
+	CredentialsDBPath string `toml:"credentials_db_path"`
+	CryptoDBPath      string `toml:"crypto_db_path"`
+	PickleKey         string `toml:"pickle_key"`
+	AutoJoinInvites   bool   `toml:"auto_join_invites"`
+}
 
 type CredentialStore struct {
 	Homeserver    string   `json:"homeserver"`
@@ -22,6 +32,15 @@ type CredentialStore struct {
 	DeviceID      string   `json:"device_id"`
 	EncryptedData []byte   `json:"encrypted_data"`
 	Nonce         [24]byte `json:"nonce"`
+	Salt          []byte   `json:"salt"`
+}
+
+func deriveKey(password string, salt []byte) [32]byte {
+	derived := argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+
+	var key [32]byte
+	copy(key[:], derived)
+	return key
 }
 
 func getEncryptionKey(password string) [32]byte {
@@ -39,7 +58,7 @@ func getPassword() (string, error) {
 		return password, nil
 	}
 
-	fmt.Print("Enter Matrix password: ")
+	fmt.Print("🔑 Enter Matrix password (or set MATRIX_PASSWORD env var): ")
 	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 	fmt.Println()
 	if err != nil {
@@ -59,7 +78,12 @@ func loadCredentials(dbPath, password string) (*mautrix.Client, error) {
 		return nil, fmt.Errorf("failed to parse credentials file: %w", err)
 	}
 
-	key := getEncryptionKey(password)
+	// future: remove this
+	if len(store.Salt) == 0 {
+		return nil, errors.New("legacy credentials file detected (no salt). Please delete the credentials.json file and log in again to upgrade security")
+	}
+
+	key := deriveKey(password, store.Salt)
 	decrypted, ok := secretbox.Open(nil, store.EncryptedData, &store.Nonce, &key)
 	if !ok {
 		return nil, errors.New("failed to decrypt credentials - wrong password?")
@@ -75,6 +99,8 @@ func loadCredentials(dbPath, password string) (*mautrix.Client, error) {
 }
 
 func loginAndSaveCredentials(homeserver, userID, password, dbPath string) (*mautrix.Client, error) {
+	fmt.Printf("Logging into %s as %s...\n", homeserver, userID)
+
 	client, err := mautrix.NewClient(homeserver, id.UserID(userID), "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
@@ -95,8 +121,12 @@ func loginAndSaveCredentials(homeserver, userID, password, dbPath string) (*maut
 	client.AccessToken = resp.AccessToken
 	client.DeviceID = resp.DeviceID
 
-	// encrypt and save the access token
-	key := getEncryptionKey(password)
+	salt := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
+		return nil, fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	key := deriveKey(password, salt)
 	var nonce [24]byte
 	if _, err := io.ReadFull(rand.Reader, nonce[:]); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
@@ -110,6 +140,7 @@ func loginAndSaveCredentials(homeserver, userID, password, dbPath string) (*maut
 		DeviceID:      string(resp.DeviceID),
 		EncryptedData: encrypted,
 		Nonce:         nonce,
+		Salt:          salt,
 	}
 
 	data, err := json.Marshal(store)
@@ -125,7 +156,7 @@ func loginAndSaveCredentials(homeserver, userID, password, dbPath string) (*maut
 	return client, nil
 }
 
-func GetMatrixClient(config *MatrixConfig) (*mautrix.Client, error) {
+func GetMatrixClient(config *Config) (*mautrix.Client, error) {
 	password, err := getPassword()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get password: %w", err)

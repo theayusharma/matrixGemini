@@ -1,13 +1,17 @@
 [matrix]
 homeserver = "https://matrix.org"
 user_id = "@your_bot:matrix.org"
-device_id = "matrix_BOT"
 credentials_db_path = "./rakka_creds.json"
 crypto_db_path = "./rakka_crypto.db"
 pickle_key = "change_this_to_random_string_for_encryption"
-auto_join = true
+auto_join_invites = true
 
-[gemini]
+[discord]
+enabled = true
+token = "bot_token_here"
+
+[LLM]
+provider = "gemini"
 api_key = "AIza..."
 model = "gemini-flash-latest"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
@@ -15,9 +19,9 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 [bot]
 name = "Bot"
 system_prompt = "You are a helpful Matrix bot."
-max_response_tokens = 500
-temperature = 0.7
-max_conversation_history = 10
+max_response_tokens = 1000
+temperature = 0.85
+max_conversational_history = 10
 
 [credits]
 file_path = "./user_credits.json"

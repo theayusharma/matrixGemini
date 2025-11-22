@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"crypto/rand"
@@ -7,10 +7,16 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/nacl/secretbox"
-	"maunium.net/go/mautrix/id"
 )
+
+type CreditsConfig struct {
+	FilePath    string `toml:"file_path"`
+	GlobalLimit int    `toml:"global_limit"`
+	MasterKey   string `toml:"master_key"`
+}
 
 type UserCredit struct {
 	UserID        string   `json:"user_id"`
@@ -26,19 +32,42 @@ type CreditManager struct {
 	filePath    string
 	masterKey   [32]byte
 	globalLimit int
+	dirty       bool
 }
 
-func NewCreditManager(filePath string, globalLimit int, masterKeyStr string) *CreditManager {
+func NewCreditManager(cfg CreditsConfig) *CreditManager {
 	cm := &CreditManager{
 		users:       make(map[string]*UserCredit),
-		filePath:    filePath,
-		globalLimit: globalLimit,
+		filePath:    cfg.FilePath,
+		globalLimit: cfg.GlobalLimit,
 	}
 
-	copy(cm.masterKey[:], masterKeyStr)
+	keyBytes := make([]byte, 32)
+	copy(keyBytes, []byte(cfg.MasterKey))
+	copy(cm.masterKey[:], keyBytes)
 
 	cm.loadFromFile()
+	go cm.autoSaveLoop()
 	return cm
+}
+
+func (cm *CreditManager) autoSaveLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	for range ticker.C {
+		cm.mu.Lock()
+		if cm.dirty {
+			cm.saveToFile()
+			cm.dirty = false
+		}
+		cm.mu.Unlock()
+	}
+}
+
+func (cm *CreditManager) ForceSave() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	cm.saveToFileUnsafe()
 }
 
 func (cm *CreditManager) loadFromFile() {
@@ -47,16 +76,15 @@ func (cm *CreditManager) loadFromFile() {
 
 	data, err := os.ReadFile(cm.filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return
-		}
-		log.Printf("Failed to load credits file: %v", err)
 		return
 	}
 
-	if err := json.Unmarshal(data, &cm.users); err != nil {
-		log.Printf("Failed to parse credits file: %v", err)
-	}
+	json.Unmarshal(data, &cm.users)
+}
+
+func (cm *CreditManager) saveToFileUnsafe() {
+	data, _ := json.Marshal(cm.users)
+	_ = os.WriteFile(cm.filePath, data, 0600)
 }
 
 func (cm *CreditManager) saveToFile() {
@@ -88,7 +116,7 @@ func (cm *CreditManager) decryptAPIKey(encrypted []byte, nonce [24]byte) (string
 	return string(decrypted), nil
 }
 
-func (cm *CreditManager) SetUserAPIKey(userID id.UserID, apiKey string) error {
+func (cm *CreditManager) SetUserAPIKey(userID string, apiKey string) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -109,7 +137,7 @@ func (cm *CreditManager) SetUserAPIKey(userID id.UserID, apiKey string) error {
 	return nil
 }
 
-func (cm *CreditManager) GetUserAPIKey(userID id.UserID) (string, error) {
+func (cm *CreditManager) GetUserAPIKey(userID string) (string, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -121,7 +149,7 @@ func (cm *CreditManager) GetUserAPIKey(userID id.UserID) (string, error) {
 	return cm.decryptAPIKey(user.APIKey, user.Nonce)
 }
 
-func (cm *CreditManager) CanUseAPI(userID id.UserID) bool {
+func (cm *CreditManager) CanUseAPI(userID string) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -138,25 +166,21 @@ func (cm *CreditManager) CanUseAPI(userID id.UserID) bool {
 	return true
 }
 
-func (cm *CreditManager) RecordUsage(userID id.UserID, tokens int) {
+func (cm *CreditManager) RecordUsage(userID string, tokens int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
-	userIDStr := string(userID)
-	user, exists := cm.users[userIDStr]
-	if !exists {
-		user = &UserCredit{UserID: userIDStr}
-		cm.users[userIDStr] = user
+	if _, exists := cm.users[userID]; !exists {
+		cm.users[userID] = &UserCredit{UserID: userID}
 	}
 
-	if user.APIKey == nil {
-		user.TokenCount += tokens
+	if cm.users[userID].APIKey == nil {
+		cm.users[userID].TokenCount += tokens
 	}
-
-	cm.saveToFile()
+	cm.dirty = true
 }
 
-func (cm *CreditManager) GetUserStats(userID id.UserID) (int, bool) {
+func (cm *CreditManager) GetUserStats(userID string) (int, bool) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
@@ -169,7 +193,7 @@ func (cm *CreditManager) GetUserStats(userID id.UserID) (int, bool) {
 	return user.TokenCount, hasOwnKey
 }
 
-func (cm *CreditManager) SetSearchEnabled(userID id.UserID, enabled bool) {
+func (cm *CreditManager) SetSearchEnabled(userID string, enabled bool) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 
@@ -182,7 +206,7 @@ func (cm *CreditManager) SetSearchEnabled(userID id.UserID, enabled bool) {
 	cm.saveToFile()
 }
 
-func (cm *CreditManager) IsSearchEnabled(userID id.UserID) bool {
+func (cm *CreditManager) IsSearchEnabled(userID string) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 
